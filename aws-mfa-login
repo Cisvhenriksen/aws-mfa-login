@@ -21,7 +21,7 @@ if [ $age -eq 0 -o $age -gt $refresh_secs ]; then
         else
             read -p "Please enter MFA code for $mfa_arn: " code
         fi
-        tokenjson=$(aws --profile default sts get-session-token --serial-number $mfa_arn --token-code $code)
+        tokenjson=$(aws --profile default sts get-session-token --serial-number $mfa_arn --token-code $code --output json)
         if [ $? -eq 0 ]; then
             access_key=$(echo $tokenjson | jq -r .Credentials.AccessKeyId)
             secret_access_key=$(echo $tokenjson | jq -r .Credentials.SecretAccessKey)
