@@ -1,33 +1,53 @@
-#!/bin/bash -e
+#!/bin/sh -e
+
+# Check if AWS CLI is installed and callable
+if ! command -v aws >/dev/null 2>&1; then
+    echo "Missing module: AWS CLI"
+    exit 1
+fi
+
+# Check if JQ is installed and callable
+if ! command -v jq >/dev/null 2>&1; then
+    echo "Missing module: jq json library"
+    exit 1
+fi
+
+# Ask user for ARN to be used
+if [ -z "${AWS_MFA_ARN}" ]; then
+    printf "Please enter a valid AWS_MFA_ARN: "
+    read AWS_MFA_ARN
+    export AWS_MFA_ARN
+else
+    echo "The environment variable AWS_MFA_ARN is set to ${AWS_MFA_ARN}."
+fi
 
 mfa_arn=${1:-$AWS_MFA_ARN}
-# refresh every 8 hours (default lifetime is 12 hours)
 refresh=${2:-8}
 refresh_secs=$(($refresh*3600))
 
 now=$(date +%s)
 if [ -f $HOME/.aws-mfa-login.timestamp ] ; then
-    ts=$(<$HOME/.aws-mfa-login.timestamp)
+    ts=$(cat $HOME/.aws-mfa-login.timestamp)
     age=$(($now-$ts))
 else
     age=0
 fi
 
 if [ $age -eq 0 -o $age -gt $refresh_secs ]; then
-    while true
+    # Maximum 3 attempts before script exits
+    attempt=0
+    while [ $attempt -lt 3 ]
     do
-        if type osascript > /dev/null; then
-            code=$(osascript -e "tell app \"System Events\" to display dialog \"Please enter MFA code for $mfa_arn: \" default answer \"\"" -e 'text returned of result')
-        else
-            read -p "Please enter MFA code for $mfa_arn: " code
-        fi
+        printf "Please enter MFA code for $mfa_arn: "
+        read code
         tokenjson=$(aws --profile default sts get-session-token --serial-number $mfa_arn --token-code $code --output json)
         if [ $? -eq 0 ]; then
-            access_key=$(echo $tokenjson | jq -r .Credentials.AccessKeyId)
-            secret_access_key=$(echo $tokenjson | jq -r .Credentials.SecretAccessKey)
-            session_token=$(echo $tokenjson | jq -r .Credentials.SessionToken)
+            access_key=$(echo $tokenjson | jq -r '.Credentials.AccessKeyId')
+            secret_access_key=$(echo $tokenjson | jq -r '.Credentials.SecretAccessKey')
+            session_token=$(echo $tokenjson | jq -r '.Credentials.SessionToken')
             cp $HOME/.aws/credentials $HOME/.aws/credentials.new
-            sed -i -e '/# BEGIN TEMPORARY CREDENTIALS/,/# END TEMPORARY CREDENTIALS/d' $HOME/.aws/credentials.new
+            sed '/# BEGIN TEMPORARY CREDENTIALS/,/# END TEMPORARY CREDENTIALS/d' $HOME/.aws/credentials.new > $HOME/.aws/credentials.temp
+            mv $HOME/.aws/credentials.temp $HOME/.aws/credentials.new
             cat >> $HOME/.aws/credentials.new <<EOF
 # BEGIN TEMPORARY CREDENTIALS
 [mfa]
@@ -40,8 +60,15 @@ EOF
             mv $HOME/.aws/credentials.new $HOME/.aws/credentials
             date +%s > $HOME/.aws-mfa-login.timestamp
             break
+        else
+            echo "Failed to get session token, please try again."
+            attempt=$((attempt+1))
         fi
-    done 
+    done
+    if [ $attempt -eq 3 ]; then
+        echo "Maximum attempts reached. Exiting."
+        exit 1
+    fi
 else
     echo "Credentials are still valid."
 fi
