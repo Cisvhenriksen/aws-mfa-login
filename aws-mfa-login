@@ -21,10 +21,10 @@ else
     echo "The environment variable AWS_MFA_ARN is set to ${AWS_MFA_ARN}."
 fi
 
+# set variables
 mfa_arn=${1:-$AWS_MFA_ARN}
 refresh=${2:-8}
 refresh_secs=$(($refresh*3600))
-
 now=$(date +%s)
 if [ -f $HOME/.aws-mfa-login.timestamp ] ; then
     ts=$(cat $HOME/.aws-mfa-login.timestamp)
@@ -38,13 +38,18 @@ if [ $age -eq 0 -o $age -gt $refresh_secs ]; then
     attempt=0
     while [ $attempt -lt 3 ]
     do
+        # Prompt for MFA code
         printf "Please enter MFA code for $mfa_arn: "
         read code
+        # Retrieve the JSON response from AWS CLI
         tokenjson=$(aws --profile default sts get-session-token --serial-number $mfa_arn --token-code $code --output json)
         if [ $? -eq 0 ]; then
+            # Parse the JSON response and extract the temporary credentials
             access_key=$(echo $tokenjson | jq -r '.Credentials.AccessKeyId')
             secret_access_key=$(echo $tokenjson | jq -r '.Credentials.SecretAccessKey')
             session_token=$(echo $tokenjson | jq -r '.Credentials.SessionToken')
+
+            # Update AWS credentials file
             cp $HOME/.aws/credentials $HOME/.aws/credentials.new
             sed '/# BEGIN TEMPORARY CREDENTIALS/,/# END TEMPORARY CREDENTIALS/d' $HOME/.aws/credentials.new > $HOME/.aws/credentials.temp
             mv $HOME/.aws/credentials.temp $HOME/.aws/credentials.new
@@ -58,6 +63,8 @@ aws_session_token=$session_token
 EOF
             cp -p $HOME/.aws/credentials $HOME/.aws/credentials.old
             mv $HOME/.aws/credentials.new $HOME/.aws/credentials
+
+            # Update timestamp file
             date +%s > $HOME/.aws-mfa-login.timestamp
             break
         else
