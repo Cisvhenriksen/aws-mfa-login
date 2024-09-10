@@ -9,12 +9,6 @@ if (-not (Get-Command aws -ErrorAction SilentlyContinue)) {
     exit 1
 }
 
-# Check if JQ is installed and callable
-if (-not (Get-Command jq -ErrorAction SilentlyContinue)) {
-    Write-Host "Missing module: jq json library"
-    exit 1
-}
-
 # Ask user for ARN to be used
 if (-not $env:AWS_MFA_ARN) {
     $AWS_MFA_ARN = Read-Host "Please enter a valid AWS_MFA_ARN"
@@ -28,7 +22,7 @@ $mfa_arn = if ($args[0]) { $args[0] } else { $env:AWS_MFA_ARN }
 $refresh = if ($args[1]) { [int]$args[1] } else { 8 }
 $refresh_secs = $refresh * 3600
 $now = [int][double]::Parse((Get-Date -UFormat %s))
-$timestampFile = "$HOME\.aws-mfa-login.timestamp"
+$timestampFile = "$HOME/.aws-mfa-login.timestamp"
 if (Test-Path $timestampFile) {
     $ts = Get-Content $timestampFile
     $age = $now - [int]$ts
@@ -44,21 +38,21 @@ if ($age -eq 0 -or $age -gt $refresh_secs) {
         $mfa_code = Read-Host "Please enter MFA code for ${mfa_arn}"
 
         # Retrieve the JSON response from AWS CLI
-        $responseJson = aws --profile default sts get-session-token --serial-number $mfa_arn --token-code $mfa_code --output json | jq -r '.Credentials'
+        $responseJson = aws --profile default sts get-session-token --serial-number $mfa_arn --token-code $mfa_code --output json
 
         # Convert JSON response to PowerShell object
         $response = $responseJson | ConvertFrom-Json
 
         if ($response) {
             # extract the temporary credentials
-            $aws_access_key_id = $response.AccessKeyId
-            $aws_secret_access_key = $response.SecretAccessKey
-            $aws_session_token = $response.SessionToken
+            $aws_access_key_id = $response.Credentials.AccessKeyId
+            $aws_secret_access_key = $response.Credentials.SecretAccessKey
+            $aws_session_token = $response.Credentials.SessionToken
 
             # Update AWS credentials file
-            $credentialsFile = "$HOME\.aws\credentials"
-            $credentialsNewFile = "$HOME\.aws\credentials.new"
-            $credentialsOldFile = "$HOME\.aws\credentials.old"
+            $credentialsFile = "$HOME/.aws/credentials"
+            $credentialsNewFile = "$HOME/.aws/credentials.new"
+            $credentialsOldFile = "$HOME/.aws/credentials.old"
 
             Copy-Item -Path $credentialsFile -Destination $credentialsNewFile
             (Get-Content $credentialsNewFile) -replace '# BEGIN TEMPORARY CREDENTIALS.*# END TEMPORARY CREDENTIALS', '' | Set-Content $credentialsNewFile
