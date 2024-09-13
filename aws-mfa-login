@@ -14,11 +14,11 @@ fi
 
 # Ask user for ARN to be used
 if [ -z "${AWS_MFA_ARN}" ]; then
-    printf "Please enter a valid AWS_MFA_ARN: "
+    echo "ERROR: The environment variable AWS_MFA_ARN is not defined."
+    echo ""
+    printf "Please enter a valid AWS_MFA_ARN [e.g. 'arn:aws:iam::123456789123:mfa/johndoe'] : "
     read AWS_MFA_ARN
     export AWS_MFA_ARN
-else
-    echo "The environment variable AWS_MFA_ARN is set to ${AWS_MFA_ARN}."
 fi
 
 # set variables
@@ -39,6 +39,7 @@ if [ $age -eq 0 -o $age -gt $refresh_secs ]; then
     while [ $attempt -lt 3 ]
     do
         # Prompt for MFA code
+        echo ""
         printf "Please enter MFA code for $mfa_arn: "
         read code
         # Retrieve the JSON response from AWS CLI
@@ -77,5 +78,6 @@ EOF
         exit 1
     fi
 else
+    echo ""
     echo "Credentials are still valid."
 fi
