@@ -179,7 +179,7 @@ if ! is_token_valid; then
             cp $credentials_file $credentials_new_file && \
             sed -i '/# BEGIN TEMPORARY CREDENTIALS/,/# END TEMPORARY CREDENTIALS/d' $credentials_new_file
             if [ $? -eq 0 ]; then
-            echo "stale credentials removed successfully."
+            echo "Stale credentials removed successfully."
             else
             echo "Failed to remove stale credentials."
             fi
@@ -196,6 +196,7 @@ EOF
             mv $credentials_new_file $credentials_file
 
             # Update timestamp file
+            echo "Credentials file updated successfully"
             date +%s >$timestamp_file
             break
         else
