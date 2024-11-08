@@ -1,5 +1,91 @@
 #!/bin/sh -e
 
+# Filepath variables
+credentials_file="$HOME/.aws/credentials"
+credentials_new_file="$HOME/.aws/credentials.new"
+timestamp_file="$HOME/.aws/mfa-login.timestamp"
+credentials_backup="$HOME/.aws/credentials.old"
+
+# Function to display help message
+show_help() {
+    echo "Usage: $0 [options]"
+    echo "Options:"
+    echo "  --help, -h        Show this help message"
+    echo "  --refresh <hours> Set the refresh interval in hours (default: 8)"
+    echo "  --logout          Logout and remove temporary credentials"
+    echo "  --restore         Restores credentials file from backup"
+}
+
+# Function to check if the current token is valid
+is_token_valid() {
+    if [ -f "$timestamp_file" ]; then
+        ts=$(cat "$timestamp_file")
+        now=$(date +%s)
+
+        # Ensure the timestamp is a valid number
+        if ! [ "$ts" -eq "$ts" ] 2>/dev/null; then
+            echo "Invalid timestamp format."
+            return 1
+        fi
+
+        age=$((now - ts))
+        if [ $age -lt $refresh_secs ]; then
+            return 0 # Token is valid
+        fi
+    fi
+    return 1 # Token is not valid
+}
+
+# Function to logout temporary credentials
+logout() {
+    if [ -f "$credentials_file" ]; then
+        if grep -q '# BEGIN TEMPORARY CREDENTIALS' "$credentials_file"; then
+            sed '/# BEGIN TEMPORARY CREDENTIALS/,/# END TEMPORARY CREDENTIALS/d' "$credentials_file" >"$credentials_new_file"
+            mv "$credentials_new_file" "$credentials_file"
+            rm -f "$timestamp_file"
+            echo "Logged out and removed temporary credentials."
+        else
+            echo "No temporary credentials found to remove."
+        fi
+    else
+        echo "No credentials file found to logout."
+    fi
+}
+
+restore() {
+    if [ -f "$credentials_backup" ]; then
+        logout
+        mv "$credentials_backup" "$credentials_file"
+        echo "Restored credentials file from backup."
+    else
+        echo "No backup found, exiting"
+    fi
+}
+
+# Function to save the variable to the shell configuration file
+save_to_env() {
+    local var_name="$1"
+    local var_value="$2"
+
+    if [ -f "$HOME/.bash_profile" ]; then
+        CONFIG_FILE="$HOME/.bash_profile"
+    elif [ -f "$HOME/.profile" ]; then
+        CONFIG_FILE="$HOME/.profile"
+    else
+        echo "No suitable configuration file found."
+        return 1
+    fi
+
+    if ! grep -q "export $var_name=" "$CONFIG_FILE"; then
+        echo "export $var_name=\"$var_value\"" >>"$CONFIG_FILE"
+    else
+        sed -i "s|export $var_name=.*|export $var_name=\"$var_value\"|" "$CONFIG_FILE"
+    fi
+
+    # Reload the environment
+    . "$CONFIG_FILE"
+}
+
 # Check if AWS CLI is installed and callable
 if ! command -v aws >/dev/null 2>&1; then
     echo "Missing module: AWS CLI"
@@ -12,6 +98,46 @@ if ! command -v jq >/dev/null 2>&1; then
     exit 1
 fi
 
+# Parse command-line arguments
+refresh=8
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+    --help | -h)
+        show_help
+        exit 0
+        ;;
+    --refresh)
+        refresh="$2"
+        shift 2
+        ;;
+    --logout)
+        logout
+        exit 0
+        ;;
+    --restore)
+        restore
+        exit 0
+        ;;
+    *)
+        echo "Unknown option: $1"
+        show_help
+        exit 1
+        ;;
+    esac
+done
+
+refresh_secs=$(($refresh * 3600))
+
+# Check if a valid token exists
+if is_token_valid; then
+    echo "A valid token exists. Do you want to log in as a different user? (y/n)"
+    read answer
+    if [ "$answer" != "y" ]; then
+        echo "Using existing valid credentials."
+        exit 0
+    fi
+fi
+
 # Ask user for ARN to be used
 if [ -z "${AWS_MFA_ARN}" ]; then
     echo "ERROR: The environment variable AWS_MFA_ARN is not defined."
@@ -19,25 +145,24 @@ if [ -z "${AWS_MFA_ARN}" ]; then
     printf "Please enter a valid AWS_MFA_ARN [e.g. 'arn:aws:iam::123456789123:mfa/johndoe'] : "
     read AWS_MFA_ARN
     export AWS_MFA_ARN
-fi
-
-# set variables
-mfa_arn=${1:-$AWS_MFA_ARN}
-refresh=${2:-8}
-refresh_secs=$(($refresh*3600))
-now=$(date +%s)
-if [ -f $HOME/.aws-mfa-login.timestamp ] ; then
-    ts=$(cat $HOME/.aws-mfa-login.timestamp)
-    age=$(($now-$ts))
+    save_to_env "AWS_MFA_ARN" "$AWS_MFA_ARN"
 else
-    age=0
+    echo "Enter MFA ARN (${AWS_MFA_ARN}):"
+    read input
+    if [ -n "$input" ]; then
+        AWS_MFA_ARN="$input"
+        export AWS_MFA_ARN
+        save_to_env "AWS_MFA_ARN" "$AWS_MFA_ARN"
+    fi
 fi
 
-if [ $age -eq 0 -o $age -gt $refresh_secs ]; then
+# Set variables
+mfa_arn=${1:-$AWS_MFA_ARN}
+
+if ! is_token_valid; then
     # Maximum 3 attempts before script exits
     attempt=0
-    while [ $attempt -lt 3 ]
-    do
+    while [ $attempt -lt 3 ]; do
         # Prompt for MFA code
         echo ""
         printf "Please enter MFA code for $mfa_arn: "
@@ -51,10 +176,14 @@ if [ $age -eq 0 -o $age -gt $refresh_secs ]; then
             session_token=$(echo $tokenjson | jq -r '.Credentials.SessionToken')
 
             # Update AWS credentials file
-            cp $HOME/.aws/credentials $HOME/.aws/credentials.new
-            sed '/# BEGIN TEMPORARY CREDENTIALS/,/# END TEMPORARY CREDENTIALS/d' $HOME/.aws/credentials.new > $HOME/.aws/credentials.temp
-            mv $HOME/.aws/credentials.temp $HOME/.aws/credentials.new
-            cat >> $HOME/.aws/credentials.new <<EOF
+            cp $credentials_file $credentials_new_file && \
+            sed -i '/# BEGIN TEMPORARY CREDENTIALS/,/# END TEMPORARY CREDENTIALS/d' $credentials_new_file
+            if [ $? -eq 0 ]; then
+            echo "stale credentials removed successfully."
+            else
+            echo "Failed to remove stale credentials."
+            fi
+            cat >>"$credentials_new_file" <<EOF
 # BEGIN TEMPORARY CREDENTIALS
 [mfa]
 aws_access_key_id=$access_key
@@ -62,15 +191,16 @@ aws_secret_access_key=$secret_access_key
 aws_session_token=$session_token
 # END TEMPORARY CREDENTIALS
 EOF
-            cp -p $HOME/.aws/credentials $HOME/.aws/credentials.old
-            mv $HOME/.aws/credentials.new $HOME/.aws/credentials
+            # Backup current config, in case all fails.
+            cp -p $credentials_file $credentials_backup
+            mv $credentials_new_file $credentials_file
 
             # Update timestamp file
-            date +%s > $HOME/.aws-mfa-login.timestamp
+            date +%s >$timestamp_file
             break
         else
             echo "Failed to get session token, please try again."
-            attempt=$((attempt+1))
+            attempt=$((attempt + 1))
         fi
     done
     if [ $attempt -eq 3 ]; then
