@@ -6,26 +6,18 @@ if ! command -v aws >/dev/null 2>&1; then
     exit 1
 fi
 
-# Check if JQ is installed and callable
-if ! command -v jq >/dev/null 2>&1; then
-    echo "Missing module: jq json library"
+# Check if okta-aws-cli is installed and callable
+if ! command -v okta-aws-cli >/dev/null 2>&1; then
+    echo "Missing module: okta-aws-cli. https://github.com/okta/okta-aws-cli?tab=readme-ov-file#installation"
     exit 1
 fi
 
-# Ask user for ARN to be used
-if [ -z "${AWS_MFA_ARN}" ]; then
-    echo "ERROR: The environment variable AWS_MFA_ARN is not defined."
-    echo ""
-    printf "Please enter a valid AWS_MFA_ARN [e.g. 'arn:aws:iam::123456789123:mfa/johndoe'] : "
-    read AWS_MFA_ARN
-    export AWS_MFA_ARN
-fi
-
 # set variables
-mfa_arn=${1:-$AWS_MFA_ARN}
-refresh=${2:-8}
+refresh=${2:-1}
 refresh_secs=$(($refresh*3600))
 now=$(date +%s)
+FORCE=${FORCE:-0}
+
 if [ -f $HOME/.aws-mfa-login.timestamp ] ; then
     ts=$(cat $HOME/.aws-mfa-login.timestamp)
     age=$(($now-$ts))
@@ -33,38 +25,13 @@ else
     age=0
 fi
 
-if [ $age -eq 0 -o $age -gt $refresh_secs ]; then
+if [ $age -eq 0 -o $age -gt $refresh_secs -o $FORCE -eq 1 ] ; then
     # Maximum 3 attempts before script exits
     attempt=0
     while [ $attempt -lt 3 ]
     do
-        # Prompt for MFA code
-        echo ""
-        printf "Please enter MFA code for $mfa_arn: "
-        read code
-        # Retrieve the JSON response from AWS CLI
-        tokenjson=$(aws --profile default sts get-session-token --serial-number $mfa_arn --token-code $code --output json)
+        okta-aws-cli --profile mfa
         if [ $? -eq 0 ]; then
-            # Parse the JSON response and extract the temporary credentials
-            access_key=$(echo $tokenjson | jq -r '.Credentials.AccessKeyId')
-            secret_access_key=$(echo $tokenjson | jq -r '.Credentials.SecretAccessKey')
-            session_token=$(echo $tokenjson | jq -r '.Credentials.SessionToken')
-
-            # Update AWS credentials file
-            cp $HOME/.aws/credentials $HOME/.aws/credentials.new
-            sed '/# BEGIN TEMPORARY CREDENTIALS/,/# END TEMPORARY CREDENTIALS/d' $HOME/.aws/credentials.new > $HOME/.aws/credentials.temp
-            mv $HOME/.aws/credentials.temp $HOME/.aws/credentials.new
-            cat >> $HOME/.aws/credentials.new <<EOF
-# BEGIN TEMPORARY CREDENTIALS
-[mfa]
-aws_access_key_id=$access_key
-aws_secret_access_key=$secret_access_key
-aws_session_token=$session_token
-# END TEMPORARY CREDENTIALS
-EOF
-            cp -p $HOME/.aws/credentials $HOME/.aws/credentials.old
-            mv $HOME/.aws/credentials.new $HOME/.aws/credentials
-
             # Update timestamp file
             date +%s > $HOME/.aws-mfa-login.timestamp
             break
@@ -79,5 +46,5 @@ EOF
     fi
 else
     echo ""
-    echo "Credentials are still valid."
+    echo "Credentials are still valid. $(( ($refresh_secs - $age) / 60 )) minutes before expiration."
 fi
